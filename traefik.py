@@ -1,11 +1,11 @@
 '''
 Traefik collectd plugin written in Python.
 '''
+import base64
 
 import collectd
 import json
 import urllib2
-import socket
 import collections
 
 
@@ -78,6 +78,10 @@ def configure_callback(conf):
     verboseLogging = VERBOSE_LOGGING
     version = TRAEFIK_VERSION
     instance = TRAEFIK_INSTANCE
+
+    username = None
+    password = None
+
     for node in conf.children:
         if node.key == 'Host':
             host = node.values[0]
@@ -89,12 +93,18 @@ def configure_callback(conf):
             version = node.values[0]
         elif node.key == 'Instance':
             instance = node.values[0]
+        elif node.key == "User":
+            username = node.values[0]
+        elif node.key == "Password":
+            password = node.values[0]
         else:
             collectd.warning('traefik plugin: Unknown config key: %s.' % node.key)
             continue
 
-    log_verbose(verboseLogging, 'traefik plugin configured with host = %s, port = %s, verbose logging = %s, version = %s, instance = %s' % (
-      host, port, verboseLogging, version, instance))
+    auth_enabled = username is not None and password is not None
+
+    log_verbose(verboseLogging, 'traefik plugin configured with host = %s, port = %s, verbose logging = %s, version = %s, instance = %s, auth = %s' % (
+      host, port, verboseLogging, version, instance, auth_enabled))
 
     CONFIGS.append({
         'host': host,
@@ -103,17 +113,21 @@ def configure_callback(conf):
         'verboseLogging': verboseLogging,
         'version': version,
         'instance': instance,
+        'auth': base64.encodestring('%s:%s' % (username, password)).strip() if auth_enabled else None
     })
 
 
 def read():
     for conf in CONFIGS:
       try:
-          result = json.load(urllib2.urlopen(conf['url'], timeout=10))
-      except urllib2.URLError, e:
+          request = urllib2.Request(conf['url'])
+          if conf['auth'] is not None:
+            request.add_header("Authorization", "Basic %s" % conf['auth'])
+    
+          result = json.load(urllib2.urlopen(request))
+          parse_stats(conf, result)
+      except urllib2.URLError as e:
           collectd.error('traefik plugin: Error connecting to %s - %r' % (conf['url'], e))
-          return None
-      parse_stats(conf, result)
 
 
 def parse_stats(conf, result):
